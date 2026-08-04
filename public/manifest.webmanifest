@@ -1,0 +1,19 @@
+{
+  "name": "Bio Spin 45",
+  "short_name": "Bio Spin 45",
+  "description": "肠道菌群—骨骼肌研究的每日 45 分钟学习转盘",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f7f6f0",
+  "theme_color": "#1e8476",
+  "lang": "zh-CN",
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
