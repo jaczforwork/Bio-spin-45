@@ -57,6 +57,7 @@ type Assessment = {
 const STORAGE_KEY = "bio-spin-45-state-v2";
 const LEGACY_STORAGE_KEY = "bio-spin-45-state-v1";
 const SESSION_LENGTH = 45 * 60 * 1000;
+const SPIN_DURATION = 4800;
 const APP_BASE = import.meta.env.BASE_URL;
 const CATEGORIES = Object.keys(CATEGORY_META) as CategoryKey[];
 
@@ -449,6 +450,7 @@ export default function Home() {
     const nextRotation = rotation + adjustment + (6 + Math.floor(Math.random() * 3)) * 360;
 
     setIsSpinning(true);
+    setNotice("");
     setRotation(nextRotation);
     window.setTimeout(() => {
       const topic = wheelTopics[selectedIndex];
@@ -458,7 +460,13 @@ export default function Home() {
       }));
       setIsSpinning(false);
       setNotice(`今天抽到：${topic.title}`);
-    }, 4200);
+      window.setTimeout(() => {
+        document.getElementById("spin-result")?.scrollIntoView({
+          behavior: "smooth",
+          block: "nearest",
+        });
+      }, 120);
+    }, SPIN_DURATION);
   };
 
   const openAssessment = () => {
@@ -645,16 +653,26 @@ export default function Home() {
               aria-label="开始抽取今日学习主题"
             >
               <svg viewBox="0 0 360 360" role="img" aria-label={`共有 ${wheelTopics.length} 个学习主题的转盘`}>
-                <g transform={`rotate(${rotation} 180 180)`} className="wheel-art">
+                <g
+                  className="wheel-art"
+                  style={{ transform: `rotate(${rotation}deg)` }}
+                >
                   {wheelTopics.map((topic, index) => {
                     const meta = CATEGORY_META[topic.category];
                     const angle = -90 + ((index + 0.5) * 360) / wheelTopics.length;
                     const radians = (angle * Math.PI) / 180;
                     const x = 180 + Math.cos(radians) * 105;
                     const y = 180 + Math.sin(radians) * 105;
+                    const isSelected = !isSpinning && currentTopic?.id === topic.id;
                     return (
                       <g key={topic.id}>
-                        <path d={sectorPath(index, wheelTopics.length)} fill={meta.color} opacity="0.96" stroke="#ffffff" strokeWidth="1.2" />
+                        <path
+                          d={sectorPath(index, wheelTopics.length)}
+                          fill={meta.color}
+                          opacity={isSelected ? "1" : "0.96"}
+                          stroke={isSelected ? "#16282a" : "#ffffff"}
+                          strokeWidth={isSelected ? "4" : "1.2"}
+                        />
                         <text x={x} y={y} textAnchor="middle" dominantBaseline="central" transform={`rotate(${angle + 90} ${x} ${y})`} className="wheel-label">
                           {topic.short}
                         </text>
@@ -665,13 +683,28 @@ export default function Home() {
                   <text x="180" y="174" textAnchor="middle" className="wheel-center-small">BIO</text>
                   <text x="180" y="193" textAnchor="middle" className="wheel-center-large">45</text>
                 </g>
-                <polygon points="180,20 163,52 197,52" fill="#243132" />
+                <g className="wheel-pointer" aria-hidden="true">
+                  <polygon points="162,4 198,4 180,39" fill="#16282a" />
+                  <circle cx="180" cy="7" r="5" fill="#f7f6f0" />
+                </g>
               </svg>
             </button>
             <button className="spin-cta" onClick={spin} disabled={isSpinning || Boolean(currentTopic)}>
               {isSpinning ? "正在抽取…" : currentTopic ? "今日任务已确定" : "点击转盘，开始抽签"}
             </button>
             <p className="roulette-caption">当前 {wheelTopics.length}/20 个主题 · 完成后自动补充</p>
+            {currentTopic && (
+              <div
+                id="spin-result"
+                className="spin-result"
+                style={{ "--topic-color": CATEGORY_META[currentTopic.category].color } as CSSProperties}
+                aria-live="polite"
+              >
+                <span>指针选中 · {CATEGORY_META[currentTopic.category].label}</span>
+                <strong>{currentTopic.title}</strong>
+                <p>{currentTopic.goal}</p>
+              </div>
+            )}
           </div>
 
           {currentTopic ? (
