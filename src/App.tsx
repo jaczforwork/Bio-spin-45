@@ -14,6 +14,8 @@ type StudyRecord = {
   topicId: string;
   completedAt: string;
   mastery: number;
+  understanding?: string;
+  question?: string;
   note?: string;
 };
 
@@ -54,8 +56,11 @@ type EditDraft = {
 type Assessment = {
   topicId: string;
   mastery: number;
-  note: string;
+  understanding: string;
+  question: string;
 };
+
+type AuthMode = "password" | "register" | "magic";
 
 type LibrarySort =
   | "updated"
@@ -70,6 +75,7 @@ type SyncStatus = "local" | "syncing" | "synced" | "offline" | "error";
 
 const STORAGE_KEY = "bio-spin-45-state-v2";
 const LEGACY_STORAGE_KEY = "bio-spin-45-state-v1";
+const ASSESSMENT_DRAFT_KEY = "bio-spin-45-assessment-draft-v1";
 const SESSION_LENGTH = 45 * 60 * 1000;
 const SPIN_DURATION = 4800;
 const APP_BASE = import.meta.env.BASE_URL;
@@ -192,6 +198,22 @@ function readState(): AppState {
     return saved ? normalizeState(JSON.parse(saved)) : newDefaultState();
   } catch {
     return newDefaultState();
+  }
+}
+
+function readAssessmentDraft(topicId: string | undefined): Assessment | null {
+  if (!topicId || typeof window === "undefined") return null;
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(ASSESSMENT_DRAFT_KEY) ?? "null") as Partial<Assessment> | null;
+    if (!saved || saved.topicId !== topicId) return null;
+    return {
+      topicId,
+      mastery: typeof saved.mastery === "number" ? Math.min(5, Math.max(1, saved.mastery)) : 3,
+      understanding: typeof saved.understanding === "string" ? saved.understanding : "",
+      question: typeof saved.question === "string" ? saved.question : "",
+    };
+  } catch {
+    return null;
   }
 }
 
@@ -480,6 +502,48 @@ function topicToDraft(topic: Topic): EditDraft {
   };
 }
 
+function buildChatGPTPrompt(topic: Topic, understanding: string, question: string) {
+  return `你是一位严谨、善于启发研究生的生物医学导师。请评估我对今天学习主题的真实掌握程度。
+
+【我的研究方向】肠道菌群调控骨骼肌
+【今日主题】${topic.title}
+【学习目标】${topic.goal}
+【45 分钟学习路线】
+${topic.plan.map((step, index) => `${index + 1}. ${step}`).join("\n")}
+
+【我用自己的话做的解释】
+${understanding.trim()}
+
+【我仍然不确定的问题】
+${question.trim() || "暂时没有写出具体问题，请帮我发现理解盲区。"}
+
+请按下面的方式辅导我：
+1. 分别指出我的表述中正确、模糊、可能错误或缺失的部分；
+2. 先提出 3 个由浅入深的追问，让我作答，不要立刻替我回答；
+3. 检查我能否把这个知识用于肠道菌群—骨骼肌研究，并给出一个具体应用情境；
+4. 在我回答追问后，按 1–5 分评估掌握程度，并说明评分依据、一个最需要补强的点和一个 15 分钟复习任务。
+
+请区分事实准确性、机制理解和实验应用，不要因为文字流畅而高估掌握程度。`;
+}
+
+async function copyText(text: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
+    document.body.appendChild(textarea);
+    textarea.select();
+    const copied = document.execCommand("copy");
+    textarea.remove();
+    return copied;
+  }
+}
+
 export default function Home() {
   const [state, setState] = useState<AppState>(newDefaultState);
   const [hydrated, setHydrated] = useState(false);
@@ -489,6 +553,7 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState<"spin" | "library" | "recommend">("spin");
   const [notice, setNotice] = useState("");
   const [assessment, setAssessment] = useState<Assessment | null>(null);
+  const [viewingRecord, setViewingRecord] = useState<StudyRecord | null>(null);
   const [customTitle, setCustomTitle] = useState("");
   const [customCategory, setCustomCategory] = useState<CategoryKey>("microbiome");
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -498,6 +563,9 @@ export default function Home() {
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("local");
   const [cloudPanelOpen, setCloudPanelOpen] = useState(false);
   const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [authMode, setAuthMode] = useState<AuthMode>("password");
   const [linkSent, setLinkSent] = useState(false);
   const [authBusy, setAuthBusy] = useState(false);
   const stateRef = useRef(state);
@@ -505,7 +573,9 @@ export default function Home() {
   const lastSyncedRef = useRef("");
 
   useEffect(() => {
-    setState(readState());
+    const savedState = readState();
+    setState(savedState);
+    setAssessment(readAssessmentDraft(savedState.session?.topicId));
     setHydrated(true);
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker
@@ -513,6 +583,15 @@ export default function Home() {
         .catch(() => undefined);
     }
   }, []);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    if (assessment) {
+      window.localStorage.setItem(ASSESSMENT_DRAFT_KEY, JSON.stringify(assessment));
+    } else {
+      window.localStorage.removeItem(ASSESSMENT_DRAFT_KEY);
+    }
+  }, [assessment, hydrated]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -673,6 +752,7 @@ export default function Home() {
     () => new Set(state.records.map((record) => record.topicId)),
     [state.records],
   );
+  const latestRecords = useMemo(() => latestRecordMap(state.records), [state.records]);
   const categoryStats = useMemo(
     () => getCategoryStats(state.records, allTopics),
     [state.records, allTopics],
@@ -746,6 +826,7 @@ export default function Home() {
         : syncStatus === "error"
           ? "同步异常"
           : "已同步";
+  const viewingTopic = viewingRecord ? topicLookup.get(viewingRecord.topicId) : undefined;
 
   const spin = () => {
     if (isSpinning || currentTopic || wheelTopics.length === 0) return;
@@ -778,17 +859,20 @@ export default function Home() {
 
   const openAssessment = () => {
     if (!currentTopic) return;
-    setAssessment({ topicId: currentTopic.id, mastery: 3, note: "" });
+    setAssessment({ topicId: currentTopic.id, mastery: 3, understanding: "", question: "" });
   };
 
   const saveAssessment = () => {
     if (!assessment || !currentTopic || assessment.topicId !== currentTopic.id) return;
+    const understanding = assessment.understanding.trim();
+    if (understanding.length < 10) return;
     setState((previous) => {
       const completed: StudyRecord = {
         topicId: currentTopic.id,
         completedAt: new Date().toISOString(),
         mastery: assessment.mastery,
-        note: assessment.note.trim() || undefined,
+        understanding,
+        question: assessment.question.trim() || undefined,
       };
       const withRecord: AppState = {
         ...previous,
@@ -799,6 +883,21 @@ export default function Home() {
     });
     setAssessment(null);
     setNotice(`已归档「${currentTopic.title}」。系统会依据你的自评挑选下一个新主题。`);
+  };
+
+  const openChatGPTEvaluation = async (topic: Topic, understanding: string, question: string) => {
+    if (understanding.trim().length < 10) {
+      setNotice("请先用至少 10 个字写下自己的理解，再请 ChatGPT 评估。");
+      return;
+    }
+    const chatWindow = window.open("https://chatgpt.com/", "_blank");
+    if (chatWindow) chatWindow.opener = null;
+    const copied = await copyText(buildChatGPTPrompt(topic, understanding, question));
+    if (!chatWindow) {
+      setNotice(copied ? "评估材料已复制；浏览器阻止了新窗口，请手动打开 ChatGPT 并粘贴。" : "无法打开 ChatGPT，请检查浏览器的新窗口权限。");
+      return;
+    }
+    setNotice(copied ? "评估材料已复制。请在 ChatGPT 输入框中粘贴并发送，回来后按反馈调整掌握度。" : "ChatGPT 已打开，但自动复制失败；请返回并手动复制你的学习输出。");
   };
 
   const redraw = () => {
@@ -955,12 +1054,71 @@ export default function Home() {
     setNotice(`登录链接已发送到 ${email}，请在邮件中点击链接。`);
   };
 
+  const signInWithPassword = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const client = supabase;
+    const email = authEmail.trim().toLowerCase();
+    if (!client || !email || authPassword.length < 8) return;
+    setAuthBusy(true);
+    const { error } = await client.auth.signInWithPassword({ email, password: authPassword });
+    setAuthBusy(false);
+    if (error) {
+      setNotice(`登录失败：${error.message}。如果你以前只用邮件链接登录，请先在 Safari 网页版登录并设置同步密码。`);
+      return;
+    }
+    setAuthEmail(email);
+    setAuthPassword("");
+    setNotice("已在当前 App 内登录，正在合并并同步学习记录。");
+  };
+
+  const signUpWithPassword = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const client = supabase;
+    const email = authEmail.trim().toLowerCase();
+    if (!client || !email || authPassword.length < 8) return;
+    setAuthBusy(true);
+    const { data, error } = await client.auth.signUp({
+      email,
+      password: authPassword,
+      options: { emailRedirectTo: `${window.location.origin}${APP_BASE}` },
+    });
+    setAuthBusy(false);
+    if (error) {
+      setNotice(`注册失败：${error.message}`);
+      return;
+    }
+    setAuthEmail(email);
+    setAuthPassword("");
+    if (data.session) {
+      setNotice("账号已创建并在当前 App 内登录，正在同步学习记录。");
+    } else {
+      setLinkSent(true);
+      setNotice(`确认邮件已发送到 ${email}。确认后请回到桌面 App 用邮箱和密码登录。`);
+    }
+  };
+
+  const setSyncPassword = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const client = supabase;
+    if (!client || !authSession || newPassword.length < 8) return;
+    setAuthBusy(true);
+    const { error } = await client.auth.updateUser({ password: newPassword });
+    setAuthBusy(false);
+    if (error) {
+      setNotice(`同步密码设置失败：${error.message}`);
+      return;
+    }
+    setNewPassword("");
+    setNotice("同步密码已设置。现在可在主屏幕 App 中用同一邮箱和密码直接登录。");
+  };
+
   const signOut = async () => {
     const client = supabase;
     if (!client) return;
     await client.auth.signOut();
     setCloudPanelOpen(false);
     setLinkSent(false);
+    setAuthMode("password");
     setNotice("已退出云同步；本机记录仍然保留。");
   };
 
@@ -1025,18 +1183,57 @@ export default function Home() {
           </div>
           {authSession ? (
             <div className="cloud-account">
-              <span>{authSession.user.email}</span>
-              <strong>{syncLabel}</strong>
-              <button className="text-button" onClick={signOut}>退出登录</button>
+              <div className="cloud-account-status">
+                <span>{authSession.user.email}</span>
+                <strong>{syncLabel}</strong>
+              </div>
+              <form className="password-set-form" onSubmit={setSyncPassword}>
+                <label htmlFor="new-sync-password">同步密码</label>
+                <input
+                  id="new-sync-password"
+                  className="input"
+                  type="password"
+                  autoComplete="new-password"
+                  minLength={8}
+                  value={newPassword}
+                  onChange={(event) => setNewPassword(event.target.value)}
+                  placeholder="设置或修改（至少 8 位）"
+                  required
+                />
+                <button className="save-button" disabled={authBusy || newPassword.length < 8} type="submit">保存密码</button>
+              </form>
+              <p>从邮件链接登录的老用户，请在 Safari 网页版设置一次密码，再到主屏幕 App 直接登录。</p>
+              <button className="text-button cloud-signout" onClick={signOut}>退出登录</button>
             </div>
           ) : linkSent ? (
             <div className="magic-link-sent" role="status">
-              <strong>登录邮件已经发送</strong>
-              <p>请在这台设备打开发往 {authEmail} 的邮件，点击其中的登录链接。返回后会自动合并并同步学习记录。</p>
+              <strong>{authMode === "register" ? "确认邮件已经发送" : "登录邮件已经发送"}</strong>
+              <p>{authMode === "register" ? `请确认发往 ${authEmail} 的邮件，然后回到主屏幕 App，用刚设置的邮箱和密码登录。` : `请打开发往 ${authEmail} 的邮件并点击登录链接。iOS 可能会在 Safari 中登录；登录后请在那里设置同步密码，再回到主屏幕 App。`}</p>
               <div>
-                <button className="text-button" type="button" onClick={() => setLinkSent(false)}>重新发送或更换邮箱</button>
+                <button className="text-button" type="button" onClick={() => setLinkSent(false)}>返回登录方式</button>
               </div>
             </div>
+          ) : authMode === "password" ? (
+            <form className="cloud-form cloud-form-stacked" onSubmit={signInWithPassword}>
+              <label htmlFor="auth-email">邮箱地址</label>
+              <input id="auth-email" className="input" type="email" autoComplete="email" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder="name@example.com" required />
+              <label htmlFor="auth-password">同步密码</label>
+              <input id="auth-password" className="input" type="password" autoComplete="current-password" minLength={8} value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} placeholder="至少 8 位" required />
+              <button className="save-button" disabled={authBusy || authPassword.length < 8} type="submit">{authBusy ? "正在登录…" : "在当前 App 登录"}</button>
+              <div className="auth-switches">
+                <button className="text-button" type="button" onClick={() => { setAuthMode("register"); setLinkSent(false); }}>注册新账号</button>
+                <button className="text-button" type="button" onClick={() => { setAuthMode("magic"); setLinkSent(false); }}>使用邮件登录链接</button>
+              </div>
+            </form>
+          ) : authMode === "register" ? (
+            <form className="cloud-form cloud-form-stacked" onSubmit={signUpWithPassword}>
+              <label htmlFor="register-email">注册邮箱</label>
+              <input id="register-email" className="input" type="email" autoComplete="email" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder="name@example.com" required />
+              <label htmlFor="register-password">设置同步密码</label>
+              <input id="register-password" className="input" type="password" autoComplete="new-password" minLength={8} value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} placeholder="至少 8 位" required />
+              <button className="save-button" disabled={authBusy || authPassword.length < 8} type="submit">{authBusy ? "正在注册…" : "注册并发送确认邮件"}</button>
+              <button className="text-button auth-back" type="button" onClick={() => { setAuthMode("password"); setLinkSent(false); }}>返回邮箱密码登录</button>
+            </form>
           ) : (
             <form className="cloud-form" onSubmit={sendAuthLink}>
               <label htmlFor="auth-email">邮箱地址</label>
@@ -1051,6 +1248,7 @@ export default function Home() {
                 required
               />
               <button className="save-button" disabled={authBusy} type="submit">{authBusy ? "正在发送…" : "发送登录链接"}</button>
+              <button className="text-button" type="button" onClick={() => { setAuthMode("password"); setLinkSent(false); }}>返回邮箱密码登录</button>
             </form>
           )}
         </section>
@@ -1304,6 +1502,7 @@ export default function Home() {
           <div className="topic-grid">
             {sortedLibraryTopics.map((topic) => {
               const completed = learnedIds.has(topic.id);
+              const latestRecord = latestRecords.get(topic.id);
               const active = state.activeWheelIds.includes(topic.id);
               const isCurrent = state.session?.topicId === topic.id;
               const isCustom = state.customTopics.some((candidate) => candidate.id === topic.id);
@@ -1318,6 +1517,9 @@ export default function Home() {
                   <small>{isCurrent ? "今日学习中" : completed ? "已学习" : active ? "转盘中" : "等待推荐"}</small>
                   <div className="topic-card-actions">
                     <button className="text-button" onClick={() => beginEdit(topic)}>编辑</button>
+                    {latestRecord && (
+                      <button className="text-button" onClick={() => setViewingRecord(latestRecord)}>学习记录</button>
+                    )}
                     {active ? (
                       <button className="text-button" disabled={isCurrent} onClick={() => swapOutOfWheel(topic.id)}>{isCurrent ? "学习中" : "换出"}</button>
                     ) : (
@@ -1340,12 +1542,24 @@ export default function Home() {
         </section>
       )}
 
-      {assessment && (
+      {assessment && currentTopic && (
         <div className="assessment-backdrop" role="dialog" aria-modal="true" aria-labelledby="assessment-title">
           <article className="assessment-card">
             <p className="section-kicker">LEARNING CHECK-IN</p>
-            <h2 id="assessment-title">这 45 分钟，你掌握得怎样？</h2>
-            <p>这不是考试。你的自评会让系统更合理地选择补强、承接或进阶的下一项内容。</p>
+            <h2 id="assessment-title">先输出，再判断自己是否真的学会</h2>
+            <p>用自己的话解释「{currentTopic.title}」。学习输出会进入记录，并随你的账号跨设备同步。</p>
+            <label className="assessment-field" htmlFor="understanding-output">
+              <span>我的理解 <em>必填，至少 10 个字</em></span>
+              <textarea id="understanding-output" className="textarea" value={assessment.understanding} onChange={(event) => setAssessment({ ...assessment, understanding: event.target.value })} placeholder="不要抄定义：试着写清它是什么、为什么重要，以及它怎样用于肠道菌群—骨骼肌研究。" />
+            </label>
+            <label className="assessment-field" htmlFor="remaining-question">
+              <span>仍然不确定的问题 <em>可选</em></span>
+              <textarea id="remaining-question" className="textarea compact" value={assessment.question} onChange={(event) => setAssessment({ ...assessment, question: event.target.value })} placeholder="例如：这个方法的主要混杂因素是什么？结果能否支持因果关系？" />
+            </label>
+            <button className="chatgpt-button" type="button" disabled={assessment.understanding.trim().length < 10} onClick={() => void openChatGPTEvaluation(currentTopic, assessment.understanding, assessment.question)}>
+              复制评估材料并打开 ChatGPT
+            </button>
+            <p className="chatgpt-hint">在 ChatGPT 中粘贴并发送；完成追问后，根据反馈调整下面的分数。</p>
             <div className="assessment-options">
               {[
                 [1, "完全陌生"], [2, "还需复习"], [3, "能复述"], [4, "能判读"], [5, "能应用"],
@@ -1355,10 +1569,38 @@ export default function Home() {
                 </button>
               ))}
             </div>
-            <textarea className="textarea" value={assessment.note} onChange={(event) => setAssessment({ ...assessment, note: event.target.value })} placeholder="可选：记一句收获、疑问或下次要补的点" />
             <div className="assessment-actions">
               <button className="text-button" onClick={() => setAssessment(null)}>暂不归档</button>
-              <button className="save-button" onClick={saveAssessment}>保存并推荐下一项</button>
+              <button className="save-button" disabled={assessment.understanding.trim().length < 10} onClick={saveAssessment}>保存输出并推荐下一项</button>
+            </div>
+          </article>
+        </div>
+      )}
+
+      {viewingRecord && viewingTopic && (
+        <div className="assessment-backdrop" role="dialog" aria-modal="true" aria-labelledby="record-title">
+          <article className="assessment-card record-card">
+            <p className="section-kicker">LEARNING RECORD</p>
+            <h2 id="record-title">{viewingTopic.title}</h2>
+            <div className="record-meta">
+              <span>{new Date(viewingRecord.completedAt).toLocaleString("zh-CN")}</span>
+              <strong>掌握度 {viewingRecord.mastery}/5</strong>
+            </div>
+            <section className="record-section">
+              <h3>我的理解</h3>
+              <p>{viewingRecord.understanding ?? viewingRecord.note ?? "这条旧记录没有保存学习输出。"}</p>
+            </section>
+            {viewingRecord.question && (
+              <section className="record-section">
+                <h3>仍然不确定的问题</h3>
+                <p>{viewingRecord.question}</p>
+              </section>
+            )}
+            <div className="assessment-actions">
+              <button className="text-button" onClick={() => setViewingRecord(null)}>关闭</button>
+              {(viewingRecord.understanding ?? viewingRecord.note) && (
+                <button className="chatgpt-button compact-button" onClick={() => void openChatGPTEvaluation(viewingTopic, viewingRecord.understanding ?? viewingRecord.note ?? "", viewingRecord.question ?? "")}>再次请 ChatGPT 评估</button>
+              )}
             </div>
           </article>
         </div>

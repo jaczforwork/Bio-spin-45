@@ -1,4 +1,4 @@
-const CACHE_NAME = "bio-spin-45-pages-v5";
+const CACHE_NAME = "bio-spin-45-pages-v6";
 const BASE_URL = new URL("./", self.registration.scope).pathname;
 const APP_SHELL = [BASE_URL, `${BASE_URL}manifest.webmanifest`, `${BASE_URL}icon.svg`];
 

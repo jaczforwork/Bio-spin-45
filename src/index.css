@@ -132,14 +132,24 @@ button { -webkit-tap-highlight-color: transparent; }
 .cloud-form { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-content: center; }
 .cloud-form label { grid-column: 1 / -1; color: #486263; font-size: 12px; font-weight: 760; }
 .cloud-form .text-button { grid-column: 1 / -1; justify-self: end; padding: 7px 9px; font-size: 11px; }
+.cloud-form-stacked { grid-template-columns: 1fr auto; }
+.cloud-form-stacked label { margin-top: 2px; }
+.cloud-form-stacked .input { grid-column: 1 / -1; }
+.cloud-form-stacked > .save-button { grid-column: 1 / -1; }
+.auth-switches { display: flex; grid-column: 1 / -1; justify-content: space-between; gap: 8px; }
+.auth-switches .text-button, .cloud-form .auth-back { grid-column: auto; justify-self: auto; }
 .magic-link-sent { display: grid; gap: 7px; align-content: center; }
 .magic-link-sent strong { color: var(--teal-deep); font-size: 14px; }
 .magic-link-sent p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .magic-link-sent > div { display: flex; justify-content: flex-end; }
-.cloud-account { display: grid; grid-template-columns: 1fr auto; gap: 7px 12px; align-items: center; align-content: center; }
+.cloud-account { display: grid; gap: 9px; align-content: center; }
+.cloud-account-status { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .cloud-account span { overflow: hidden; text-overflow: ellipsis; color: var(--muted); font-size: 12px; }
-.cloud-account strong { color: var(--teal-deep); font-size: 12px; }
-.cloud-account .text-button { grid-column: 1 / -1; justify-self: end; }
+.cloud-account strong { flex: 0 0 auto; color: var(--teal-deep); font-size: 12px; }
+.cloud-account > p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
+.password-set-form { display: grid; grid-template-columns: 1fr auto; gap: 7px; }
+.password-set-form label { grid-column: 1 / -1; color: #486263; font-size: 12px; font-weight: 760; }
+.cloud-account .cloud-signout { justify-self: end; }
 
 .notice {
   display: flex;
@@ -270,6 +280,7 @@ button { -webkit-tap-highlight-color: transparent; }
 .input, .select, .textarea { width: 100%; padding: 10px 11px; border: 1px solid var(--line); border-radius: 11px; outline: none; color: var(--ink); background: #fff; font-size: 13px; }
 .input:focus, .select:focus, .textarea:focus { border-color: var(--teal); box-shadow: 0 0 0 3px rgba(30,132,118,.12); }
 .save-button, .add-wheel-button, .recommend-button { padding: 10px 12px; border-radius: 11px; color: #fff; background: var(--ink); white-space: nowrap; font-size: 13px; }
+.save-button:disabled, .chatgpt-button:disabled { opacity: .42; cursor: default; }
 .delete-button { padding: 8px 10px; border-radius: 10px; color: #a63838; background: #fff0ef; font-size: 12px; }
 .delete-button:disabled { opacity: .45; cursor: default; }
 
@@ -297,8 +308,8 @@ button { -webkit-tap-highlight-color: transparent; }
 .focus-controls button { padding: 7px 8px; border: 1px solid var(--line); border-radius: 999px; color: #536668; background: #fff; cursor: pointer; font-size: 11px; font-weight: 760; }
 .focus-controls button.active { border-color: transparent; color: #fff; background: var(--ink); }
 
-.assessment-backdrop { position: fixed; z-index: 20; inset: 0; display: grid; place-items: end center; padding: 18px; background: rgba(13,28,29,.34); backdrop-filter: blur(5px); }
-.assessment-card { width: min(650px, 100%); padding: 23px; border-radius: 24px; background: #fffdf8; box-shadow: 0 25px 70px rgba(0,0,0,.24); }
+.assessment-backdrop { position: fixed; z-index: 20; inset: 0; display: grid; place-items: end center; overflow-y: auto; padding: 18px; background: rgba(13,28,29,.34); backdrop-filter: blur(5px); }
+.assessment-card { width: min(650px, 100%); max-height: calc(100dvh - 36px); overflow-y: auto; padding: 23px; border-radius: 24px; background: #fffdf8; box-shadow: 0 25px 70px rgba(0,0,0,.24); }
 .assessment-card h2 { margin: 5px 0 8px; font-size: 26px; letter-spacing: -.04em; }
 .assessment-card > p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.55; }
 .assessment-options { flex-wrap: wrap; align-items: stretch; gap: 8px; margin: 18px 0; }
@@ -307,7 +318,19 @@ button { -webkit-tap-highlight-color: transparent; }
 .rating-option strong { display: block; font-size: 18px; }
 .rating-option span { display: block; margin-top: 2px; font-size: 10px; line-height: 1.25; }
 .textarea { min-height: 82px; resize: vertical; }
+.textarea.compact { min-height: 64px; }
+.assessment-field { display: grid; gap: 6px; margin-top: 14px; }
+.assessment-field > span { color: #40595a; font-size: 12px; font-weight: 800; }
+.assessment-field em { color: var(--muted); font-size: 10px; font-style: normal; font-weight: 600; }
+.chatgpt-button { width: 100%; margin-top: 10px; padding: 11px 13px; border: 1px solid rgba(31,109,101,.18); border-radius: 12px; color: #fff; background: linear-gradient(135deg, #147d72, #164b49); font-size: 13px; font-weight: 800; }
+.assessment-card > .chatgpt-hint { margin-top: 7px; font-size: 11px; }
+.compact-button { width: auto; margin: 0; }
 .assessment-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 14px; }
+.record-meta { display: flex; justify-content: space-between; gap: 12px; margin: 15px 0; padding: 9px 11px; border-radius: 11px; background: var(--paper-deep); color: var(--muted); font-size: 12px; }
+.record-meta strong { color: var(--teal-deep); }
+.record-section { margin-top: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 14px; background: #fff; }
+.record-section h3 { margin: 0 0 7px; font-size: 13px; }
+.record-section p { margin: 0; color: #405456; font-size: 13px; line-height: 1.7; white-space: pre-wrap; }
 
 @media (max-width: 780px) {
   .app-shell { width: min(100% - 24px, 680px); }
@@ -342,4 +365,10 @@ button { -webkit-tap-highlight-color: transparent; }
   .edit-form { grid-template-columns: 1fr 1fr; }
   .edit-form .edit-goal, .edit-form .edit-plan { grid-column: 1 / -1; }
   .rating-option { width: calc(33.33% - 6px); min-width: 0; }
+  .assessment-backdrop { padding: 9px; }
+  .assessment-card { max-height: calc(100dvh - 18px); padding: 19px; border-radius: 19px; }
+  .assessment-actions { flex-wrap: wrap; }
+  .assessment-actions .compact-button { width: 100%; order: -1; }
+  .password-set-form { grid-template-columns: 1fr; }
+  .password-set-form label { grid-column: auto; }
 }
