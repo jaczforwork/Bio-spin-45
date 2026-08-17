@@ -33,6 +33,7 @@ type AppState = {
   customTopics: Topic[];
   overrides: Record<string, TopicOverride>;
   focusWeights: Partial<Record<CategoryKey, number>>;
+  topicUpdatedAt: Record<string, string>;
 };
 
 type Recommendation = {
@@ -57,6 +58,7 @@ type Assessment = {
 };
 
 type LibrarySort =
+  | "updated"
   | "curriculum"
   | "difficulty-asc"
   | "difficulty-desc"
@@ -90,6 +92,7 @@ function newDefaultState(): AppState {
     customTopics: [],
     overrides: {},
     focusWeights: {},
+    topicUpdatedAt: {},
   };
 }
 
@@ -149,6 +152,14 @@ function normalizeState(value: unknown): AppState {
         }
       });
     }
+    const topicUpdatedAt: Record<string, string> = {};
+    if (parsed.topicUpdatedAt && typeof parsed.topicUpdatedAt === "object") {
+      Object.entries(parsed.topicUpdatedAt).forEach(([topicId, timestamp]) => {
+        if (typeof timestamp === "string" && !Number.isNaN(Date.parse(timestamp))) {
+          topicUpdatedAt[topicId] = timestamp;
+        }
+      });
+    }
     return {
       activeWheelIds,
       records,
@@ -165,6 +176,7 @@ function normalizeState(value: unknown): AppState {
           ? parsed.overrides
           : {},
       focusWeights,
+      topicUpdatedAt,
     };
   } catch {
     return newDefaultState();
@@ -374,6 +386,7 @@ function isUntouchedState(state: AppState) {
     state.session === null &&
     Object.keys(state.overrides).length === 0 &&
     Object.keys(state.focusWeights).length === 0 &&
+    Object.keys(state.topicUpdatedAt).length === 0 &&
     state.activeWheelIds.join("|") === INITIAL_WHEEL_IDS.join("|")
   );
 }
@@ -403,6 +416,12 @@ function mergeAppStates(local: AppState, remote: AppState): AppState {
   const sessionCandidates = [remote.session, local.session]
     .filter((session): session is StudySession => Boolean(session))
     .sort((a, b) => b.startedAt - a.startedAt);
+  const topicUpdatedAt = { ...remote.topicUpdatedAt };
+  Object.entries(local.topicUpdatedAt).forEach(([topicId, timestamp]) => {
+    if (!topicUpdatedAt[topicId] || timestamp > topicUpdatedAt[topicId]) {
+      topicUpdatedAt[topicId] = timestamp;
+    }
+  });
   const merged: AppState = {
     activeWheelIds: [...new Set([...remote.activeWheelIds, ...local.activeWheelIds])].slice(0, 20),
     records,
@@ -410,6 +429,7 @@ function mergeAppStates(local: AppState, remote: AppState): AppState {
     customTopics,
     overrides: { ...remote.overrides, ...local.overrides },
     focusWeights: { ...remote.focusWeights, ...local.focusWeights },
+    topicUpdatedAt,
   };
   const topics = mergeTopics(merged);
   const validIds = new Set(topics.map((topic) => topic.id));
@@ -473,7 +493,7 @@ export default function Home() {
   const [customCategory, setCustomCategory] = useState<CategoryKey>("microbiome");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<EditDraft>(emptyDraft);
-  const [librarySort, setLibrarySort] = useState<LibrarySort>("curriculum");
+  const [librarySort, setLibrarySort] = useState<LibrarySort>("updated");
   const [authSession, setAuthSession] = useState<AuthSession | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("local");
   const [cloudPanelOpen, setCloudPanelOpen] = useState(false);
@@ -680,6 +700,19 @@ export default function Home() {
       (originalOrder.get(a.id) ?? 0) - (originalOrder.get(b.id) ?? 0);
 
     return [...allTopics].sort((a, b) => {
+      if (librarySort === "updated") {
+        const aCustom = a.id.startsWith("custom-") ? 0 : 1;
+        const bCustom = b.id.startsWith("custom-") ? 0 : 1;
+        const customGroup = aCustom - bCustom;
+        if (customGroup) return customGroup;
+        const customTimestamp = (topic: Topic) => {
+          const saved = state.topicUpdatedAt[topic.id];
+          if (saved) return Date.parse(saved);
+          const match = topic.id.match(/^custom-(\d+)-/);
+          return match ? Number(match[1]) : 0;
+        };
+        return customTimestamp(b) - customTimestamp(a) || fallback(a, b);
+      }
       if (librarySort === "difficulty-asc") return a.difficulty - b.difficulty || fallback(a, b);
       if (librarySort === "difficulty-desc") return b.difficulty - a.difficulty || fallback(a, b);
       if (librarySort === "status") return statusRank(a) - statusRank(b) || fallback(a, b);
@@ -697,7 +730,7 @@ export default function Home() {
       }
       return fallback(a, b);
     });
-  }, [allTopics, learnedIds, librarySort, state.activeWheelIds, state.records, state.session]);
+  }, [allTopics, learnedIds, librarySort, state.activeWheelIds, state.records, state.session, state.topicUpdatedAt]);
   const remaining = state.session
     ? Math.max(0, SESSION_LENGTH - (now - state.session.startedAt))
     : SESSION_LENGTH;
@@ -819,6 +852,7 @@ export default function Home() {
     setState((previous) => ({
       ...previous,
       customTopics: [...previous.customTopics, topic],
+      topicUpdatedAt: { ...previous.topicUpdatedAt, [topic.id]: new Date().toISOString() },
     }));
     setCustomTitle("");
     setNotice(`已创建「${topic.title}」。你可以在下面编辑它，或直接加入转盘。`);
@@ -849,6 +883,7 @@ export default function Home() {
           customTopics: previous.customTopics.map((topic) =>
             topic.id === editingId ? { ...topic, ...patch } : topic,
           ),
+          topicUpdatedAt: { ...previous.topicUpdatedAt, [editingId]: new Date().toISOString() },
         };
       }
       return {
@@ -857,6 +892,7 @@ export default function Home() {
           ...previous.overrides,
           [editingId]: { ...(previous.overrides[editingId] ?? {}), ...patch },
         },
+        topicUpdatedAt: { ...previous.topicUpdatedAt, [editingId]: new Date().toISOString() },
       };
     });
     setEditingId(null);
@@ -881,12 +917,15 @@ export default function Home() {
     setState((previous) => {
       const overrides = { ...previous.overrides };
       delete overrides[topicId];
+      const topicUpdatedAt = { ...previous.topicUpdatedAt };
+      delete topicUpdatedAt[topicId];
       const cleaned: AppState = {
         ...previous,
         activeWheelIds: previous.activeWheelIds.filter((id) => id !== topicId),
         records: previous.records.filter((record) => record.topicId !== topicId),
         customTopics: previous.customTopics.filter((candidate) => candidate.id !== topicId),
         overrides,
+        topicUpdatedAt,
       };
       return fillWheel(cleaned, mergeTopics(cleaned));
     });
@@ -1280,6 +1319,7 @@ export default function Home() {
               value={librarySort}
               onChange={(event) => setLibrarySort(event.target.value as LibrarySort)}
             >
+              <option value="updated">最近更新：自定义优先</option>
               <option value="curriculum">推荐学习顺序</option>
               <option value="difficulty-asc">难度：由浅到深</option>
               <option value="difficulty-desc">难度：由深到浅</option>
