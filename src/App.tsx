@@ -498,8 +498,7 @@ export default function Home() {
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("local");
   const [cloudPanelOpen, setCloudPanelOpen] = useState(false);
   const [authEmail, setAuthEmail] = useState("");
-  const [authCode, setAuthCode] = useState("");
-  const [codeSent, setCodeSent] = useState(false);
+  const [linkSent, setLinkSent] = useState(false);
   const [authBusy, setAuthBusy] = useState(false);
   const stateRef = useRef(state);
   const syncReadyRef = useRef(false);
@@ -933,7 +932,7 @@ export default function Home() {
     setNotice(`已删除「${topic.title}」，并自动补齐转盘。`);
   };
 
-  const sendAuthCode = async (event: FormEvent<HTMLFormElement>) => {
+  const sendAuthLink = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const client = supabase;
     const email = authEmail.trim().toLowerCase();
@@ -941,37 +940,19 @@ export default function Home() {
     setAuthBusy(true);
     const { error } = await client.auth.signInWithOtp({
       email,
-      options: { shouldCreateUser: true },
+      options: {
+        shouldCreateUser: true,
+        emailRedirectTo: `${window.location.origin}${APP_BASE}`,
+      },
     });
     setAuthBusy(false);
     if (error) {
-      setNotice(`验证码发送失败：${error.message}`);
+      setNotice(`登录链接发送失败：${error.message}`);
       return;
     }
     setAuthEmail(email);
-    setCodeSent(true);
-    setNotice(`验证码已发送到 ${email}。`);
-  };
-
-  const verifyAuthCode = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const client = supabase;
-    const token = authCode.replace(/\s+/g, "");
-    if (!client || !authEmail || !token) return;
-    setAuthBusy(true);
-    const { error } = await client.auth.verifyOtp({
-      email: authEmail,
-      token,
-      type: "email",
-    });
-    setAuthBusy(false);
-    if (error) {
-      setNotice(`登录失败：${error.message}`);
-      return;
-    }
-    setAuthCode("");
-    setCodeSent(false);
-    setNotice("登录成功，正在合并并同步这台设备的学习记录。");
+    setLinkSent(true);
+    setNotice(`登录链接已发送到 ${email}，请在邮件中点击链接。`);
   };
 
   const signOut = async () => {
@@ -979,8 +960,7 @@ export default function Home() {
     if (!client) return;
     await client.auth.signOut();
     setCloudPanelOpen(false);
-    setCodeSent(false);
-    setAuthCode("");
+    setLinkSent(false);
     setNotice("已退出云同步；本机记录仍然保留。");
   };
 
@@ -1049,24 +1029,16 @@ export default function Home() {
               <strong>{syncLabel}</strong>
               <button className="text-button" onClick={signOut}>退出登录</button>
             </div>
-          ) : codeSent ? (
-            <form className="cloud-form" onSubmit={verifyAuthCode}>
-              <label htmlFor="auth-code">输入发送到 {authEmail} 的验证码</label>
-              <input
-                id="auth-code"
-                className="input auth-code"
-                inputMode="numeric"
-                autoComplete="one-time-code"
-                value={authCode}
-                onChange={(event) => setAuthCode(event.target.value)}
-                placeholder="6 位验证码"
-                required
-              />
-              <button className="save-button" disabled={authBusy} type="submit">{authBusy ? "正在验证…" : "登录并同步"}</button>
-              <button className="text-button" type="button" onClick={() => { setCodeSent(false); setAuthCode(""); }}>更换邮箱</button>
-            </form>
+          ) : linkSent ? (
+            <div className="magic-link-sent" role="status">
+              <strong>登录邮件已经发送</strong>
+              <p>请在这台设备打开发往 {authEmail} 的邮件，点击其中的登录链接。返回后会自动合并并同步学习记录。</p>
+              <div>
+                <button className="text-button" type="button" onClick={() => setLinkSent(false)}>重新发送或更换邮箱</button>
+              </div>
+            </div>
           ) : (
-            <form className="cloud-form" onSubmit={sendAuthCode}>
+            <form className="cloud-form" onSubmit={sendAuthLink}>
               <label htmlFor="auth-email">邮箱地址</label>
               <input
                 id="auth-email"
@@ -1078,7 +1050,7 @@ export default function Home() {
                 placeholder="name@example.com"
                 required
               />
-              <button className="save-button" disabled={authBusy} type="submit">{authBusy ? "正在发送…" : "发送验证码"}</button>
+              <button className="save-button" disabled={authBusy} type="submit">{authBusy ? "正在发送…" : "发送登录链接"}</button>
             </form>
           )}
         </section>

@@ -132,7 +132,10 @@ button { -webkit-tap-highlight-color: transparent; }
 .cloud-form { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-content: center; }
 .cloud-form label { grid-column: 1 / -1; color: #486263; font-size: 12px; font-weight: 760; }
 .cloud-form .text-button { grid-column: 1 / -1; justify-self: end; padding: 7px 9px; font-size: 11px; }
-.cloud-form .auth-code { font-size: 18px; font-weight: 800; letter-spacing: .18em; }
+.magic-link-sent { display: grid; gap: 7px; align-content: center; }
+.magic-link-sent strong { color: var(--teal-deep); font-size: 14px; }
+.magic-link-sent p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.magic-link-sent > div { display: flex; justify-content: flex-end; }
 .cloud-account { display: grid; grid-template-columns: 1fr auto; gap: 7px 12px; align-items: center; align-content: center; }
 .cloud-account span { overflow: hidden; text-overflow: ellipsis; color: var(--muted); font-size: 12px; }
 .cloud-account strong { color: var(--teal-deep); font-size: 12px; }
