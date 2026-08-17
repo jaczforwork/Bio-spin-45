@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, FormEvent } from "react";
+import type { Session as AuthSession } from "@supabase/supabase-js";
 import {
   CATEGORY_META,
   CategoryKey,
@@ -7,6 +8,7 @@ import {
   TOPICS,
   Topic,
 } from "./catalog";
+import { cloudEnabled, supabase } from "./cloud";
 
 type StudyRecord = {
   topicId: string;
@@ -53,6 +55,16 @@ type Assessment = {
   mastery: number;
   note: string;
 };
+
+type LibrarySort =
+  | "curriculum"
+  | "difficulty-asc"
+  | "difficulty-desc"
+  | "status"
+  | "category"
+  | "recent";
+
+type SyncStatus = "local" | "syncing" | "synced" | "offline" | "error";
 
 const STORAGE_KEY = "bio-spin-45-state-v2";
 const LEGACY_STORAGE_KEY = "bio-spin-45-state-v1";
@@ -109,14 +121,9 @@ function mergeTopics(state: AppState): Topic[] {
   })).concat(state.customTopics);
 }
 
-function readState(): AppState {
-  if (typeof window === "undefined") return newDefaultState();
+function normalizeState(value: unknown): AppState {
   try {
-    const saved =
-      window.localStorage.getItem(STORAGE_KEY) ??
-      window.localStorage.getItem(LEGACY_STORAGE_KEY);
-    if (!saved) return newDefaultState();
-    const parsed = JSON.parse(saved) as Partial<AppState>;
+    const parsed = value && typeof value === "object" ? (value as Partial<AppState>) : {};
     const customTopics = Array.isArray(parsed.customTopics)
       ? parsed.customTopics.filter(isTopic)
       : [];
@@ -159,6 +166,18 @@ function readState(): AppState {
           : {},
       focusWeights,
     };
+  } catch {
+    return newDefaultState();
+  }
+}
+
+function readState(): AppState {
+  if (typeof window === "undefined") return newDefaultState();
+  try {
+    const saved =
+      window.localStorage.getItem(STORAGE_KEY) ??
+      window.localStorage.getItem(LEGACY_STORAGE_KEY);
+    return saved ? normalizeState(JSON.parse(saved)) : newDefaultState();
   } catch {
     return newDefaultState();
   }
@@ -332,6 +351,78 @@ function replaceCompletedTopic(state: AppState, finishedId: string, topics: Topi
   };
 }
 
+function fillWheel(state: AppState, topics: Topic[], target = 20): AppState {
+  let next = { ...state, activeWheelIds: [...state.activeWheelIds] };
+  const learnedIds = new Set(next.records.map((record) => record.topicId));
+
+  while (next.activeWheelIds.length < target) {
+    const recommended = getRecommendations(next, topics, 1)[0]?.topic;
+    const fallback = topics.find(
+      (topic) => !learnedIds.has(topic.id) && !next.activeWheelIds.includes(topic.id),
+    );
+    const replacement = recommended ?? fallback;
+    if (!replacement) break;
+    next = { ...next, activeWheelIds: [...next.activeWheelIds, replacement.id] };
+  }
+  return next;
+}
+
+function isUntouchedState(state: AppState) {
+  return (
+    state.records.length === 0 &&
+    state.customTopics.length === 0 &&
+    state.session === null &&
+    Object.keys(state.overrides).length === 0 &&
+    Object.keys(state.focusWeights).length === 0 &&
+    state.activeWheelIds.join("|") === INITIAL_WHEEL_IDS.join("|")
+  );
+}
+
+function mergeAppStates(local: AppState, remote: AppState): AppState {
+  if (isUntouchedState(local)) return remote;
+  if (isUntouchedState(remote)) return local;
+
+  const customTopics = [...remote.customTopics, ...local.customTopics].reduce<Topic[]>(
+    (items, topic) => {
+      const existing = items.findIndex((candidate) => candidate.id === topic.id);
+      if (existing >= 0) items[existing] = topic;
+      else items.push(topic);
+      return items;
+    },
+    [],
+  );
+  const recordKeys = new Set<string>();
+  const records = [...remote.records, ...local.records]
+    .filter((record) => {
+      const key = `${record.topicId}|${record.completedAt}`;
+      if (recordKeys.has(key)) return false;
+      recordKeys.add(key);
+      return true;
+    })
+    .sort((a, b) => a.completedAt.localeCompare(b.completedAt));
+  const sessionCandidates = [remote.session, local.session]
+    .filter((session): session is StudySession => Boolean(session))
+    .sort((a, b) => b.startedAt - a.startedAt);
+  const merged: AppState = {
+    activeWheelIds: [...new Set([...remote.activeWheelIds, ...local.activeWheelIds])].slice(0, 20),
+    records,
+    session: sessionCandidates[0] ?? null,
+    customTopics,
+    overrides: { ...remote.overrides, ...local.overrides },
+    focusWeights: { ...remote.focusWeights, ...local.focusWeights },
+  };
+  const topics = mergeTopics(merged);
+  const validIds = new Set(topics.map((topic) => topic.id));
+  const cleaned = {
+    ...merged,
+    activeWheelIds: merged.activeWheelIds.filter((id) => validIds.has(id)),
+    records: merged.records.filter((record) => validIds.has(record.topicId)),
+    session:
+      merged.session && validIds.has(merged.session.topicId) ? merged.session : null,
+  };
+  return fillWheel(cleaned, topics);
+}
+
 function defaultShort(title: string) {
   return title.replace(/\s+/g, "").slice(0, 10) || "自定义主题";
 }
@@ -382,6 +473,17 @@ export default function Home() {
   const [customCategory, setCustomCategory] = useState<CategoryKey>("microbiome");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<EditDraft>(emptyDraft);
+  const [librarySort, setLibrarySort] = useState<LibrarySort>("curriculum");
+  const [authSession, setAuthSession] = useState<AuthSession | null>(null);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>("local");
+  const [cloudPanelOpen, setCloudPanelOpen] = useState(false);
+  const [authEmail, setAuthEmail] = useState("");
+  const [authCode, setAuthCode] = useState("");
+  const [codeSent, setCodeSent] = useState(false);
+  const [authBusy, setAuthBusy] = useState(false);
+  const stateRef = useRef(state);
+  const syncReadyRef = useRef(false);
+  const lastSyncedRef = useRef("");
 
   useEffect(() => {
     setState(readState());
@@ -395,8 +497,140 @@ export default function Home() {
 
   useEffect(() => {
     if (!hydrated) return;
+    stateRef.current = state;
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   }, [state, hydrated]);
+
+  useEffect(() => {
+    const client = supabase;
+    if (!client) return;
+    client.auth.getSession().then(({ data }) => setAuthSession(data.session));
+    const { data } = client.auth.onAuthStateChange((_event, nextSession) => {
+      setAuthSession(nextSession);
+      if (!nextSession) {
+        syncReadyRef.current = false;
+        lastSyncedRef.current = "";
+        setSyncStatus("local");
+      }
+    });
+    return () => data.subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const client = supabase;
+    const userId = authSession?.user.id;
+    if (!client || !userId || !hydrated) return;
+
+    let cancelled = false;
+    syncReadyRef.current = false;
+    setSyncStatus("syncing");
+
+    const initializeSync = async () => {
+      const { data, error } = await client
+        .from("user_states")
+        .select("state, updated_at")
+        .eq("user_id", userId)
+        .maybeSingle();
+      if (cancelled) return;
+      if (error) {
+        setSyncStatus(navigator.onLine ? "error" : "offline");
+        setNotice("云同步连接失败。本机记录仍会保留，请检查云数据库是否已完成初始化。");
+        return;
+      }
+
+      const migrationKey = `bio-spin-45-cloud-migrated:${userId}`;
+      const alreadyMigrated = window.localStorage.getItem(migrationKey) === "yes";
+      const remote = data?.state ? normalizeState(data.state) : null;
+      const next = remote
+        ? alreadyMigrated
+          ? remote
+          : mergeAppStates(stateRef.current, remote)
+        : stateRef.current;
+      const serialized = JSON.stringify(next);
+
+      stateRef.current = next;
+      setState(next);
+      const { error: saveError } = await client.from("user_states").upsert(
+        { user_id: userId, state: next, updated_at: new Date().toISOString() },
+        { onConflict: "user_id" },
+      );
+      if (cancelled) return;
+      if (saveError) {
+        setSyncStatus(navigator.onLine ? "error" : "offline");
+        setNotice("学习记录已经保存在本机，但暂时无法写入云端。");
+        return;
+      }
+
+      window.localStorage.setItem(migrationKey, "yes");
+      lastSyncedRef.current = serialized;
+      syncReadyRef.current = true;
+      setSyncStatus("synced");
+    };
+
+    void initializeSync();
+    const channel = client
+      .channel(`user-state-${userId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "user_states",
+          filter: `user_id=eq.${userId}`,
+        },
+        (payload) => {
+          const row = payload.new as { state?: unknown };
+          if (!row?.state) return;
+          const incoming = normalizeState(row.state);
+          const serialized = JSON.stringify(incoming);
+          if (serialized === lastSyncedRef.current) return;
+          lastSyncedRef.current = serialized;
+          stateRef.current = incoming;
+          setState(incoming);
+          setSyncStatus("synced");
+        },
+      )
+      .subscribe();
+
+    return () => {
+      cancelled = true;
+      syncReadyRef.current = false;
+      void client.removeChannel(channel);
+    };
+  }, [authSession?.user.id, hydrated]);
+
+  useEffect(() => {
+    const client = supabase;
+    const userId = authSession?.user.id;
+    if (!client || !userId || !hydrated || !syncReadyRef.current) return;
+    const serialized = JSON.stringify(state);
+    if (serialized === lastSyncedRef.current) return;
+
+    setSyncStatus(navigator.onLine ? "syncing" : "offline");
+    const timer = window.setTimeout(async () => {
+      const { error } = await client.from("user_states").upsert(
+        { user_id: userId, state, updated_at: new Date().toISOString() },
+        { onConflict: "user_id" },
+      );
+      if (error) {
+        setSyncStatus(navigator.onLine ? "error" : "offline");
+        return;
+      }
+      lastSyncedRef.current = serialized;
+      setSyncStatus("synced");
+    }, 650);
+    return () => window.clearTimeout(timer);
+  }, [authSession?.user.id, hydrated, state]);
+
+  useEffect(() => {
+    const retryWhenOnline = () => {
+      if (authSession?.user.id && syncReadyRef.current) {
+        setState((previous) => ({ ...previous }));
+      }
+    };
+    window.addEventListener("online", retryWhenOnline);
+    return () => window.removeEventListener("online", retryWhenOnline);
+  }, [authSession?.user.id]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
@@ -432,6 +666,38 @@ export default function Home() {
   const queueTopics = allTopics.filter(
     (topic) => !learnedIds.has(topic.id) && !state.activeWheelIds.includes(topic.id),
   );
+  const sortedLibraryTopics = useMemo(() => {
+    const originalOrder = new Map(allTopics.map((topic, index) => [topic.id, index]));
+    const latest = latestRecordMap(state.records);
+    const categoryOrder = new Map(CATEGORIES.map((category, index) => [category, index]));
+    const statusRank = (topic: Topic) => {
+      if (state.session?.topicId === topic.id) return 0;
+      if (state.activeWheelIds.includes(topic.id)) return 1;
+      if (!learnedIds.has(topic.id)) return 2;
+      return 3;
+    };
+    const fallback = (a: Topic, b: Topic) =>
+      (originalOrder.get(a.id) ?? 0) - (originalOrder.get(b.id) ?? 0);
+
+    return [...allTopics].sort((a, b) => {
+      if (librarySort === "difficulty-asc") return a.difficulty - b.difficulty || fallback(a, b);
+      if (librarySort === "difficulty-desc") return b.difficulty - a.difficulty || fallback(a, b);
+      if (librarySort === "status") return statusRank(a) - statusRank(b) || fallback(a, b);
+      if (librarySort === "category") {
+        return (
+          (categoryOrder.get(a.category) ?? 0) - (categoryOrder.get(b.category) ?? 0) ||
+          a.difficulty - b.difficulty ||
+          fallback(a, b)
+        );
+      }
+      if (librarySort === "recent") {
+        const aDate = latest.get(a.id)?.completedAt ?? "";
+        const bDate = latest.get(b.id)?.completedAt ?? "";
+        return bDate.localeCompare(aDate) || fallback(a, b);
+      }
+      return fallback(a, b);
+    });
+  }, [allTopics, learnedIds, librarySort, state.activeWheelIds, state.records, state.session]);
   const remaining = state.session
     ? Math.max(0, SESSION_LENGTH - (now - state.session.startedAt))
     : SESSION_LENGTH;
@@ -439,6 +705,15 @@ export default function Home() {
   const overallMastery = state.records.length
     ? state.records.reduce((sum, record) => sum + record.mastery, 0) / state.records.length
     : null;
+  const syncLabel = !authSession
+    ? "登录同步"
+    : syncStatus === "syncing"
+      ? "同步中…"
+      : syncStatus === "offline"
+        ? "离线保存"
+        : syncStatus === "error"
+          ? "同步异常"
+          : "已同步";
 
   const spin = () => {
     if (isSpinning || currentTopic || wheelTopics.length === 0) return;
@@ -588,6 +863,88 @@ export default function Home() {
     setNotice(`已更新「${patch.title}」。`);
   };
 
+  const deleteCustomTopic = (topicId: string) => {
+    const topic = state.customTopics.find((candidate) => candidate.id === topicId);
+    if (!topic) return;
+    if (state.session?.topicId === topicId) {
+      setNotice("这个词条正在学习中。请先完成归档或重新抽取，再删除它。");
+      return;
+    }
+    const hasRecords = state.records.some((record) => record.topicId === topicId);
+    const confirmed = window.confirm(
+      hasRecords
+        ? `确定删除「${topic.title}」吗？它的已学习记录和笔记也会一起删除。`
+        : `确定删除自定义词条「${topic.title}」吗？`,
+    );
+    if (!confirmed) return;
+
+    setState((previous) => {
+      const overrides = { ...previous.overrides };
+      delete overrides[topicId];
+      const cleaned: AppState = {
+        ...previous,
+        activeWheelIds: previous.activeWheelIds.filter((id) => id !== topicId),
+        records: previous.records.filter((record) => record.topicId !== topicId),
+        customTopics: previous.customTopics.filter((candidate) => candidate.id !== topicId),
+        overrides,
+      };
+      return fillWheel(cleaned, mergeTopics(cleaned));
+    });
+    if (editingId === topicId) setEditingId(null);
+    setNotice(`已删除「${topic.title}」，并自动补齐转盘。`);
+  };
+
+  const sendAuthCode = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const client = supabase;
+    const email = authEmail.trim().toLowerCase();
+    if (!client || !email) return;
+    setAuthBusy(true);
+    const { error } = await client.auth.signInWithOtp({
+      email,
+      options: { shouldCreateUser: true },
+    });
+    setAuthBusy(false);
+    if (error) {
+      setNotice(`验证码发送失败：${error.message}`);
+      return;
+    }
+    setAuthEmail(email);
+    setCodeSent(true);
+    setNotice(`验证码已发送到 ${email}。`);
+  };
+
+  const verifyAuthCode = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const client = supabase;
+    const token = authCode.replace(/\s+/g, "");
+    if (!client || !authEmail || !token) return;
+    setAuthBusy(true);
+    const { error } = await client.auth.verifyOtp({
+      email: authEmail,
+      token,
+      type: "email",
+    });
+    setAuthBusy(false);
+    if (error) {
+      setNotice(`登录失败：${error.message}`);
+      return;
+    }
+    setAuthCode("");
+    setCodeSent(false);
+    setNotice("登录成功，正在合并并同步这台设备的学习记录。");
+  };
+
+  const signOut = async () => {
+    const client = supabase;
+    if (!client) return;
+    await client.auth.signOut();
+    setCloudPanelOpen(false);
+    setCodeSent(false);
+    setAuthCode("");
+    setNotice("已退出云同步；本机记录仍然保留。");
+  };
+
   const toggleFocus = (category: CategoryKey) => {
     setState((previous) => {
       const base = CATEGORY_META[category].defaultWeight;
@@ -617,9 +974,20 @@ export default function Home() {
             <h1>Bio Spin 45</h1>
           </div>
         </div>
-        <div className="header-progress" aria-label={`已学习 ${uniqueLearnedCount} 个主题`}>
-          <strong>{uniqueLearnedCount}</strong>
-          <span>已学主题</span>
+        <div className="header-actions">
+          {cloudEnabled && (
+            <button
+              className={`sync-button ${syncStatus}`}
+              onClick={() => setCloudPanelOpen((open) => !open)}
+              aria-expanded={cloudPanelOpen}
+            >
+              <i aria-hidden="true" />{syncLabel}
+            </button>
+          )}
+          <div className="header-progress" aria-label={`已学习 ${uniqueLearnedCount} 个主题`}>
+            <strong>{uniqueLearnedCount}</strong>
+            <span>已学主题</span>
+          </div>
         </div>
       </header>
 
@@ -628,6 +996,54 @@ export default function Home() {
         <button className={activeTab === "recommend" ? "tab active" : "tab"} onClick={() => setActiveTab("recommend")}>为你推荐</button>
         <button className={activeTab === "library" ? "tab active" : "tab"} onClick={() => setActiveTab("library")}>学习库</button>
       </nav>
+
+      {cloudEnabled && cloudPanelOpen && (
+        <section className="cloud-panel" aria-label="跨设备同步">
+          <div>
+            <p className="section-kicker">PRIVATE CLOUD SYNC</p>
+            <h2>跨设备同步</h2>
+            <p>同一邮箱登录后，电脑、手机和平板共享抽签结果、倒计时、学习记录和自定义词条。</p>
+          </div>
+          {authSession ? (
+            <div className="cloud-account">
+              <span>{authSession.user.email}</span>
+              <strong>{syncLabel}</strong>
+              <button className="text-button" onClick={signOut}>退出登录</button>
+            </div>
+          ) : codeSent ? (
+            <form className="cloud-form" onSubmit={verifyAuthCode}>
+              <label htmlFor="auth-code">输入发送到 {authEmail} 的验证码</label>
+              <input
+                id="auth-code"
+                className="input auth-code"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                value={authCode}
+                onChange={(event) => setAuthCode(event.target.value)}
+                placeholder="6 位验证码"
+                required
+              />
+              <button className="save-button" disabled={authBusy} type="submit">{authBusy ? "正在验证…" : "登录并同步"}</button>
+              <button className="text-button" type="button" onClick={() => { setCodeSent(false); setAuthCode(""); }}>更换邮箱</button>
+            </form>
+          ) : (
+            <form className="cloud-form" onSubmit={sendAuthCode}>
+              <label htmlFor="auth-email">邮箱地址</label>
+              <input
+                id="auth-email"
+                className="input"
+                type="email"
+                autoComplete="email"
+                value={authEmail}
+                onChange={(event) => setAuthEmail(event.target.value)}
+                placeholder="name@example.com"
+                required
+              />
+              <button className="save-button" disabled={authBusy} type="submit">{authBusy ? "正在发送…" : "发送验证码"}</button>
+            </form>
+          )}
+        </section>
+      )}
 
       {notice && (
         <div className="notice" role="status">
@@ -749,7 +1165,7 @@ export default function Home() {
                 <p className="section-kicker">ADAPTIVE NEXT STEPS</p>
                 <h2>下一步推荐</h2>
               </div>
-              <span className="status-pill">本地学习记录驱动</span>
+              <span className="status-pill">{authSession ? "跨设备学习记录驱动" : "本地学习记录驱动"}</span>
             </div>
             <div className="recommendation-list">
               {recommendedTopics.length ? recommendedTopics.map(({ topic, reason }) => (
@@ -856,11 +1272,29 @@ export default function Home() {
             </article>
           )}
 
+          <div className="library-tools">
+            <label htmlFor="library-sort">排列方式</label>
+            <select
+              id="library-sort"
+              className="select"
+              value={librarySort}
+              onChange={(event) => setLibrarySort(event.target.value as LibrarySort)}
+            >
+              <option value="curriculum">推荐学习顺序</option>
+              <option value="difficulty-asc">难度：由浅到深</option>
+              <option value="difficulty-desc">难度：由深到浅</option>
+              <option value="status">状态：学习中／转盘／待学习／已学</option>
+              <option value="category">研究类别</option>
+              <option value="recent">最近学习</option>
+            </select>
+          </div>
+
           <div className="topic-grid">
-            {allTopics.map((topic) => {
+            {sortedLibraryTopics.map((topic) => {
               const completed = learnedIds.has(topic.id);
               const active = state.activeWheelIds.includes(topic.id);
               const isCurrent = state.session?.topicId === topic.id;
+              const isCustom = state.customTopics.some((candidate) => candidate.id === topic.id);
               return (
                 <article key={topic.id} className={completed ? "topic-card learned" : active ? "topic-card active" : "topic-card"}>
                   <div className="topic-card-head">
@@ -876,6 +1310,15 @@ export default function Home() {
                       <button className="text-button" disabled={isCurrent} onClick={() => swapOutOfWheel(topic.id)}>{isCurrent ? "学习中" : "换出"}</button>
                     ) : (
                       <button className="text-button" onClick={() => addToWheel(topic.id)}>{completed ? "复习到转盘" : "加入转盘"}</button>
+                    )}
+                    {isCustom && (
+                      <button
+                        className="delete-button"
+                        disabled={isCurrent}
+                        onClick={() => deleteCustomTopic(topic.id)}
+                      >
+                        {isCurrent ? "学习中不可删" : "删除"}
+                      </button>
                     )}
                   </div>
                 </article>
